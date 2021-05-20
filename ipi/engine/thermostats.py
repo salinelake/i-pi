@@ -273,7 +273,7 @@ class ThermoPILE_L(Thermostat):
         prng=None,
         bindcentroid=True,
         fixdof=None,
-    ):
+        ):
         """Binds the appropriate degrees of freedom to the thermostat.
 
         This takes a beads object with degrees of freedom, and makes its momentum

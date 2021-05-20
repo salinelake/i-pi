@@ -13,7 +13,6 @@ in the normal mode representation under the ring polymer Hamiltonian.
 
 
 import numpy as np
-
 from ipi.utils.depend import *
 from ipi.utils import units
 from ipi.utils import nmtransform
@@ -87,7 +86,7 @@ class NormalModes(dobject):
         bosons=None,
         dt=1.0,
         nmts=1,
-    ):
+        ):
         """Initializes NormalModes.
 
         Sets the options for the normal mode transform.
@@ -569,6 +568,12 @@ class NormalModes(dobject):
         if self.mode == "rpmd":
             if len(self.nm_freqs) > 0:
                 warning("nm.frequencies will be ignored for RPMD mode.", verbosity.low)
+            #### modified
+            for b in range(1, self.nbeads):
+                sk = self.omegak[b] / (self.omegan/self.nbeads*2.0)
+                dmf[b] = sk ** 2
+            print("mode=rpmd, non-centroid frequency is fixed to 2/hbar/beta")
+            ####
         elif self.mode == "manual":
             if len(self.nm_freqs) != self.nbeads - 1:
                 raise ValueError(
@@ -809,25 +814,36 @@ class NormalModes(dobject):
                     "@Normalmodes : Bosonic forces not compatible right now with the exact or Cayley propagators."
                 )
 
-            pq = np.zeros((2, self.natoms * 3), float)
-            sm = dstrip(self.beads.sm3)
-            prop_pq = dstrip(self.prop_pq)
+            sm = dstrip(self.beads.sm3)  # shape=(natoms*3)
+            prop_pq = dstrip(self.prop_pq) # shape=(nbeads, 2, 2)
             o_prop_pq = dstrip(self.o_prop_pq)
-            pnm = dstrip(self.pnm) / sm
-            qnm = dstrip(self.qnm) * sm
+            pnm = dstrip(self.pnm) / sm  ## shape=(nbeads, natoms*3)
+            qnm = dstrip(self.qnm) * sm  ## shape=(nbeads, natoms*3)
+            parallel = True
+            if parallel:
+                ## modified; parallellism
+                pqnm = np.concatenate([pnm[1:,None,:],qnm[1:,None,:]],1)
+                pqnm = np.matmul(prop_pq[1:], pqnm)
+                pnm[1:,:] = pqnm[:,0,:]
+                qnm[1:,:] = pqnm[:,1,:]
+            else:
+                # start_time = time()
+                ## original implementation, sequential
+                pq = np.zeros((2, self.natoms * 3), float)
+                for k in range(1, self.nbeads):
+                    pq[0, :] = pnm[k]
+                    pq[1, :] = qnm[k]
+                    pq = np.dot(prop_pq[k], pq)
+                    qnm[k] = pq[1, :]
+                    pnm[k] = pq[0, :]
 
-            for k in range(1, self.nbeads):
-                pq[0, :] = pnm[k]
-                pq[1, :] = qnm[k]
-                pq = np.dot(prop_pq[k], pq)
-                qnm[k] = pq[1, :]
-                pnm[k] = pq[0, :]
+                for k in range(1, self.nbeads):
+                    pq[0, :] = pnm[k]
+                    pq[1, :] = qnm[k]
+                    qnm[k] = pq[1, :]
+                    pnm[k] = pq[0, :]
+                # print('original, qfree used', time() - start_time)
 
-            for k in range(1, self.nbeads):
-                pq[0, :] = pnm[k]
-                pq[1, :] = qnm[k]
-                qnm[k] = pq[1, :]
-                pnm[k] = pq[0, :]
 
             # now for open paths we recover the initial conditions (that have not yet been overwritten)
             # and do open path propagation
