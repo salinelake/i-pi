@@ -17,7 +17,7 @@ from ipi.utils.messages import verbosity, warning
 __all__ = ["Softexit", "softexit"]
 
 
-SOFTEXITLATENCY = 10.0  # seconds to sleep between checking for soft exit
+SOFTEXITLATENCY = 1.0  # seconds to sleep between checking for soft exit
 
 
 class Softexit(object):
@@ -158,7 +158,7 @@ class Softexit(object):
             self._kill[signal](signal, frame)
 
     def _softexit_monitor(self):
-        """Keeps checking for soft exit conditions. """
+        """Keeps checking for soft exit conditions."""
 
         while self._doloop[0]:
             time.sleep(SOFTEXITLATENCY)

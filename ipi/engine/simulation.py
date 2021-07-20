@@ -10,7 +10,7 @@ choosing which properties to initialise, and which properties to output.
 # i-PI Copyright (C) 2014-2015 i-PI developers
 # See the "licenses" directory for full license information.
 
-
+import tracemalloc
 import os
 import threading
 import time
@@ -199,6 +199,7 @@ class Simulation(dobject):
         # start forcefields here so we avoid having a shitload of files printed
         # out only to find the socket is busy or whatever prevented starting the threads
         for k, f in self.fflist.items():
+            f.bind(self.output_maker)
             f.start()
 
         # Checks for repeated filenames.
@@ -266,6 +267,10 @@ class Simulation(dobject):
         softexit.register_function(self.softexit)
         softexit.start(self.ttime)
 
+        # starts tracemalloc to debug memory leaks
+        if verbosity.debug:
+            tracemalloc.start(10)
+
         # prints inital configuration -- only if we are not restarting
         if self.step == 0:
             self.step = -1
@@ -279,7 +284,7 @@ class Simulation(dobject):
                     stepthreads.append(st)
 
                 for st in stepthreads:
-                    while st.isAlive():
+                    while st.is_alive():
                         # This is necessary as join() without timeout prevents main from receiving signals.
                         st.join(2.0)
             else:
@@ -323,7 +328,7 @@ class Simulation(dobject):
                     st.start()
 
                 for st in stepthreads:
-                    while st.isAlive():
+                    while st.is_alive():
                         # This is necessary as join() without timeout prevents main from receiving signals.
                         st.join(2.0)
             else:
@@ -352,7 +357,7 @@ class Simulation(dobject):
                     stepthreads.append(st)
 
                 for st in stepthreads:
-                    while st.isAlive():
+                    while st.is_alive():
                         # This is necessary as join() without timeout prevents main from receiving signals.
                         st.join(2.0)
             else:
@@ -374,8 +379,19 @@ class Simulation(dobject):
                 )
                 cstep = 0
                 ttot = 0.0
-                # info(" # MD diagnostics: V: %10.5e    Kcv: %10.5e   Ecns: %10.5e" %
-                #     (self.properties["potential"], self.properties["kinetic_cv"], self.properties["conserved"] ) )
+
+                # tracemalloc memory traces
+                if verbosity.debug:
+
+                    snapshot = tracemalloc.take_snapshot()
+                    top_stats = snapshot.statistics("lineno")
+                    info(" # DEBUG # Top 10 memory allocations: ")
+                    for stat in top_stats[:10]:
+                        info(stat)
+                    top_stats = snapshot.statistics("traceback")
+                    info(" # DEBUG # Trace of the top memory allocation:")
+                    for line in top_stats[0].traceback.format():
+                        info(line)
 
             if os.path.exists("EXIT"):
                 info(" # EXIT file detected! Bye bye!", verbosity.low)

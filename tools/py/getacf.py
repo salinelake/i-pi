@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 """
 Computes the autocorrelation function from i-pi outputs. Assumes the input files are in xyz format and atomic units.
@@ -63,9 +63,9 @@ def compute_acf(
     # stores the indices of the "chosen" atoms.
     ndof = len(rr["data"])
     if "*" in labels:
-        labelbool = np.ones(ndof / 3, bool)
+        labelbool = np.ones(ndof // 3, bool)
     else:
-        labelbool = np.zeros(ndof / 3, bool)
+        labelbool = np.zeros(ndof // 3, bool)
         for l in labels:
             labelbool = np.logical_or(labelbool, rr["names"] == l)
     nspecies = labelbool.sum()
@@ -108,7 +108,7 @@ def compute_acf(
             # Reads the data in blocks.
             for i in range(bsize):
                 rr = read_file_raw("xyz", ff)
-                data[i] = rr["data"].reshape((ndof / 3, 3))[labelbool]
+                data[i] = rr["data"].reshape((ndof // 3, 3))[labelbool]
 
             if der is True:
                 data = np.gradient(data, axis=0) / dt

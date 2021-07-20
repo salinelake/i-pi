@@ -55,7 +55,7 @@ class ForceBead(dobject):
           been called.
 
     Depend objects:
-       ufvx: A list of the form [pot, f, vir]. These quantities are calculated
+       ufvx: A list of the form [pot, f, vir, extra]. These quantities are calculated
           all at one time by the driver, so are collected together. Each separate
           object is then taken from the list. Depends on the atom positions and
           the system box.
@@ -80,7 +80,7 @@ class ForceBead(dobject):
         self.request = None
         self._getallcount = 0
 
-    def bind(self, atoms, cell, ff):
+    def bind(self, atoms, cell, ff, output_maker):
         """Binds atoms, cell and a forcefield template to the ForceBead object.
 
         Args:
@@ -102,11 +102,11 @@ class ForceBead(dobject):
         self.ff = ff
         dself = dd(self)
 
-        # ufv depends on the atomic positions and on the cell
+        # ufvx depends on the atomic positions and on the cell
         dself.ufvx.add_dependency(dd(self.atoms).q)
         dself.ufvx.add_dependency(dd(self.cell).h)
 
-        # potential and virial are to be extracted very simply from ufv
+        # potential and virial are to be extracted very simply from ufvx
         dself.pot = depend_value(
             name="pot", func=self.get_pot, dependencies=[dself.ufvx]
         )
@@ -286,7 +286,14 @@ class ForceComponent(dobject):
     """
 
     def __init__(
-        self, ffield, nbeads=0, weight=1.0, name="", mts_weights=None, epsilon=-0.001
+        self,
+        ffield,
+        nbeads=0,
+        weight=1.0,
+        name="",
+        mts_weights=None,
+        force_extras=None,
+        epsilon=-0.001,
     ):
         """Initializes ForceComponent
 
@@ -297,9 +304,13 @@ class ForceComponent(dobject):
            weight: A relative weight to be given to the values obtained with this
               forcefield. When the contribution of all the forcefields is
               combined to give a total force, the contribution of this forcefield
-              will be weighted by this factor.
+              will be weighted by this factor. The combination is a weighted sum.
            name: The name of the forcefield.
            mts_weights: Weight of forcefield at each mts level.
+           force_extras: A list of properties that should be treated as physical quantities,
+              converted to numpy arrays and treated with ring polymer contraction. If
+              different force components have this field, they will also be summed with
+              the respective weight like a forces object.
         """
 
         self.ffield = ffield
@@ -310,9 +321,13 @@ class ForceComponent(dobject):
             self.mts_weights = np.asarray([])
         else:
             self.mts_weights = np.asarray(mts_weights)
+        if force_extras is None:
+            self.force_extras = []
+        else:
+            self.force_extras = force_extras
         self.epsilon = epsilon
 
-    def bind(self, beads, cell, fflist):
+    def bind(self, beads, cell, fflist, output_maker):
         """Binds beads, cell and force to the forcefield.
 
         Takes the beads, cell objects and makes them members of the forcefield.
@@ -351,7 +366,7 @@ class ForceComponent(dobject):
         self.beads = beads
         for b in range(self.nbeads):
             new_force = ForceBead()
-            new_force.bind(beads[b], cell, self.ff)
+            new_force.bind(beads[b], cell, self.ff, output_maker=output_maker)
             self._forces.append(new_force)
 
         # f is a big array which assembles the forces on individual beads
@@ -362,7 +377,7 @@ class ForceComponent(dobject):
             dependencies=[dd(self._forces[b]).f for b in range(self.nbeads)],
         )
 
-        # collection of pots and virs from individual beads
+        # collection of pots, virs and extras from individual beads
         dself.pots = depend_array(
             name="pots",
             value=np.zeros(self.nbeads, float),
@@ -413,14 +428,45 @@ class ForceComponent(dobject):
         return np.array([b.pot for b in self._forces], float)
 
     def extra_gather(self):
-        """Obtains the potential energy for each replica.
+        """Obtains the extra string information for each replica.
 
         Returns:
-           A list of the potential energy of each replica of the system.
+           A list of the extra dictionaries for each replica of the system.
         """
 
         self.queue()
-        return [b.extra for b in self._forces]
+
+        # converts a list of dictionaries to a dictionary of lists
+        fc_extra = {}
+        for e in self._forces[0].extra:
+            fc_extra[e] = []
+
+        for b in self._forces:
+            for e in b.extra:
+                if not e in fc_extra:
+                    raise KeyError(
+                        "Extras mismatch between beads in the same force component, key: "
+                        + e
+                    )
+                fc_extra[e].append(b.extra[e])
+
+        # force_extras should be numerical, thus can be converted to numpy arrays.
+        # we enforce the type and numpy will raise an error if not.
+        for e in self.force_extras:
+            try:
+                fc_extra[e] = np.asarray(fc_extra[e], dtype=float)
+            except KeyError:
+                raise KeyError(
+                    "force_extras required "
+                    + e
+                    + " to promote, but was not found among extras "
+                    + str(list(fc_extra.keys()))
+                )
+            except:
+                raise Exception(
+                    "force_extras has to be numerical to be treated as a physical quantity. It is not -- check the quantity that is being passed."
+                )
+        return fc_extra
 
     def vir_gather(self):
         """Obtains the virial for each replica.
@@ -515,6 +561,7 @@ class ScaledForceComponent(dobject):
         self.weight = depend_value(name="weight", value=0)
         dpipe(dd(self.bf).weight, dself.weight)
         self.mts_weights = self.bf.mts_weights
+        self.force_extras = self.bf.force_extras
 
     def get_vir(self):
         """Sums the virial of each replica.
@@ -581,7 +628,7 @@ class Forces(dobject):
         dself.virs.add_dependency(dforces.virs)
         dself.extras.add_dependency(dforces.extras)
 
-    def bind(self, beads, cell, fcomponents, fflist, open_paths):
+    def bind(self, beads, cell, fcomponents, fflist, open_paths, output_maker):
         """Binds beads, cell and forces to the forcefield.
 
 
@@ -608,6 +655,7 @@ class Forces(dobject):
         self.fcomp = fcomponents
         self.ff = fflist
         self.open_paths = open_paths
+        self.output_maker = output_maker
 
         # fflist should be a dictionary of forcefield objects
         self.mforces = []
@@ -637,6 +685,7 @@ class Forces(dobject):
                 nbeads=newb,
                 weight=fc.weight,
                 mts_weights=fc.mts_weights,
+                force_extras=fc.force_extras,
                 epsilon=fc.epsilon,
             )
             newbeads = Beads(beads.natoms, newb)
@@ -653,7 +702,7 @@ class Forces(dobject):
             dd(beads).q.add_dependant(dd(newbeads).q)
 
             # now we create a new forcecomponent which is bound to newbeads!
-            newforce.bind(newbeads, cell, fflist)
+            newforce.bind(newbeads, cell, fflist, output_maker=self.output_maker)
 
             # adds information we will later need to the appropriate lists.
             self.mbeads.append(newbeads)
@@ -827,7 +876,7 @@ class Forces(dobject):
             dself.virs.add_dependency(dd(fc).weight)
 
     def copy(self, beads=None, cell=None):
-        """ Returns a copy of this force object that can be used to compute forces,
+        """Returns a copy of this force object that can be used to compute forces,
         e.g. for use in internal loops of geometry optimizers, or for property
         calculation.
 
@@ -848,7 +897,9 @@ class Forces(dobject):
         ncell = cell
         if cell is None:
             ncell = self.cell
-        nforce.bind(nbeads, ncell, self.fcomp, self.ff, self.open_paths)
+        nforce.bind(
+            nbeads, ncell, self.fcomp, self.ff, self.open_paths, self.output_maker
+        )
         return nforce
 
     def transfer_forces(self, refforce):
@@ -894,35 +945,43 @@ class Forces(dobject):
                 dfkbself.ufvx.taint(taintme=False)
 
     def transfer_forces_manual(
-        self, new_q, new_v, new_forces, vir=np.zeros((3, 3)), extra=""
+        self, new_q, new_v, new_forces, new_x=None, vir=np.zeros((3, 3))
     ):
         """Manual (and flexible) version of the transfer forces function.
-           Instead of passing a force object, list with vectors are passed
-           Expected shape and sizes:
-             - new_q list of length equal to number of force type, containing the beads positions
-             - new_v list of length equal to number of force type, containing the beads potential energy
-             - new_f list of length equal to number of force type, containing the beads forces
+        Instead of passing a force object, list with vectors are passed
+        Expected shape and sizes:
+          - new_q list of length equal to number of force type, containing the beads positions
+          - new_v list of length equal to number of force type, containing the beads potential energy
+          - new_f list of length equal to number of force type, containing the beads forces
+          - new_x list of length equal to number of force type, containing the beads extras
         """
         msg = "Unconsistent dimensions inside transfer_forces_manual"
         assert len(self.mforces) == len(new_q), msg
         assert len(self.mforces) == len(new_v), msg
         assert len(self.mforces) == len(new_forces), msg
+        if new_x == None:
+            new_x = [[None] * self.nbeads] * len(self.mforces)
+            info("WARNING: No extras information has been passed.", verbosity.debug)
+
+        assert len(self.mforces) == len(new_x), msg
 
         for k in range(len(self.mforces)):
             mv = new_v[k]
             mf = new_forces[k]
             mq = new_q[k]
+            mextra = new_x[k]
             mself = self.mforces[k]
 
             assert mq.shape == mf.shape, msg
             assert mq.shape[0] == mv.shape[0], msg
             assert mself.nbeads == mv.shape[0], msg
             assert mself.nbeads == mq.shape[0], msg
+            assert mself.nbeads == len(mextra), msg
+            mxlist = mextra[:]
 
             dd(mself.beads).q.set(mq, manual=False)
             for b in range(mself.nbeads):
-
-                ufvx = [mv[b], mf[b], vir, extra]
+                ufvx = [mv[b], mf[b], vir, mxlist[b]]
                 dfkbself = dd(mself._forces[b])
                 dfkbself.ufvx.set(ufvx, manual=False)
                 dfkbself.ufvx.taint(taintme=False)
@@ -983,7 +1042,7 @@ class Forces(dobject):
             return self.mrpc[index].b2tob1(self.mforces[index].pots)
 
     def forces_component(self, index, weighted=True):
-        """ Fetches the index^th component of the total force."""
+        """Fetches the index^th component of the total force."""
         if weighted:
             if self.mforces[index].weight != 0:
                 return self.mforces[index].weight * self.mrpc[index].b2tob1(
@@ -993,6 +1052,19 @@ class Forces(dobject):
                 return np.zeros((self.nbeads, self.natoms * 3), float)
         else:
             return self.mrpc[index].b2tob1(dstrip(self.mforces[index].f))
+
+    def extras_component(self, index):
+        """Fetches extras that are computed for one specific force component."""
+
+        if self.nbeads != self.mforces[index].nbeads:
+            raise ValueError(
+                "Cannot fetch extras for a component when using ring polymer contraction"
+            )
+        if self.mforces[index].weight == 0:
+            raise ValueError(
+                "Cannot fetch extras for a component that has not been computed because of zero weight"
+            )
+        return self.mforces[index].extras
 
     def queue_mts(self, level):
         """Submits all the required force calculations to the forcefields."""
@@ -1008,7 +1080,7 @@ class Forces(dobject):
                 ff.queue()
 
     def forces_mts(self, level):
-        """ Fetches ONLY the forces associated with a given MTS level."""
+        """Fetches ONLY the forces associated with a given MTS level."""
 
         self.queue_mts(level)
         fk = np.zeros((self.nbeads, 3 * self.natoms))
@@ -1027,7 +1099,7 @@ class Forces(dobject):
         return fk
 
     def forcesvirs_4th_order(self, index):
-        """ Fetches the 4th order |f^2| correction to the force vector and the virial associated with a given component."""
+        """Fetches the 4th order |f^2| correction to the force vector and the virial associated with a given component."""
 
         # gives an error is number of beads is not even.
         if self.nbeads % 2 != 0:
@@ -1045,11 +1117,8 @@ class Forces(dobject):
 
         # stores the force component.
         fbase = self.mrpc[index].b2tob1(dstrip(self.mforces[index].f))
-        vbase = np.zeros((self.nbeads, 3, 3), float)
         mvirs = dstrip(self.mforces[index].virs)
-        for i in range(3):
-            for j in range(3):
-                vbase[:, i, j] += self.mrpc[index].b2tob1(mvirs[:, i, j])
+        vbase = self.mrpc[index].b2tob1(mvirs)
 
         # uses a fwd difference if epsilon > 0.
         if self.mforces[index].epsilon > 0.0:
@@ -1093,13 +1162,8 @@ class Forces(dobject):
                 )
 
                 # calculates the virial.
-                vminus = np.zeros((self.nbeads // 2, 3, 3), float)
                 dmvirs = dstrip(self.dforces.mforces[index].virs)
-                for i in range(3):
-                    for j in range(3):
-                        vminus[:, i, j] += self.dforces.mrpc[index].b2tob1(
-                            dmvirs[:, i, j]
-                        )
+                vminus = self.dforces.mrpc[index].b2tob1(dmvirs)
 
                 # calculates the finite difference.
                 f_4th_order[1::2] = 2.0 * (fminus - fbase[1::2]) / delta
@@ -1128,13 +1192,8 @@ class Forces(dobject):
                 )
 
                 # calculates the virial.
-                vplus = np.zeros((self.nbeads, 3, 3), float)
                 dmvirs = dstrip(self.dforces.mforces[index].virs)
-                for i in range(3):
-                    for j in range(3):
-                        vplus[:, i, j] += self.dforces.mrpc[index].b2tob1(
-                            dmvirs[:, i, j]
-                        )
+                vplus = self.dforces.mrpc[index].b2tob1(dmvirs)
 
                 # calculates the finite difference.
                 f_4th_order = 2.0 * (fbase - fplus) / delta
@@ -1171,13 +1230,8 @@ class Forces(dobject):
                 )
 
                 # calculates the virial.
-                vplusminus = np.zeros((self.nbeads, 3, 3), float)
                 dmvirs = dstrip(self.dforces.mforces[index].virs)
-                for i in range(3):
-                    for j in range(3):
-                        vplusminus[:, i, j] += self.dforces.mrpc[index].b2tob1(
-                            dmvirs[:, i, j]
-                        )
+                vplusminus = self.dforces.mrpc[index].b2tob1(dmvirs)
 
                 # calculates the finite difference.
                 for k in range(self.nbeads // 2):
@@ -1208,11 +1262,7 @@ class Forces(dobject):
                 # calculates the virial.
                 vplus = np.zeros((self.nbeads, 3, 3), float)
                 dmvirs = dstrip(self.dforces.mforces[index].virs)
-                for i in range(3):
-                    for j in range(3):
-                        vplus[:, i, j] += self.dforces.mrpc[index].b2tob1(
-                            dmvirs[:, i, j]
-                        )
+                vplus += self.dforces.mrpc[index].b2tob1(dmvirs)
 
                 # displaces the beads.
                 self.dbeads.q = self.beads.q - dq
@@ -1223,13 +1273,8 @@ class Forces(dobject):
                 )
 
                 # calculates the virial.
-                vminus = np.zeros((self.nbeads, 3, 3), float)
                 dmvirs = dstrip(self.dforces.mforces[index].virs)
-                for i in range(3):
-                    for j in range(3):
-                        vminus[:, i, j] += self.dforces.mrpc[index].b2tob1(
-                            dmvirs[:, i, j]
-                        )
+                vminus = self.dforces.mrpc[index].b2tob1(dmvirs)
 
                 # calculates the finite difference.
                 f_4th_order = 2.0 * (fminus - fplus) / 2.0 / delta
@@ -1239,11 +1284,11 @@ class Forces(dobject):
         return [f_4th_order, v_4th_order]
 
     def vir_mts(self, level):
-        """ Fetches ONLY the total virial associated with a given MTS level."""
+        """Fetches ONLY the total virial associated with a given MTS level."""
         return np.sum(self.virs_mts(level), axis=0)
 
     def virs_mts(self, level):
-        """ Fetches ONLY the total virial associated with a given MTS level."""
+        """Fetches ONLY the total virial associated with a given MTS level."""
 
         self.queue_mts(level)
         rp = np.zeros((self.beads.nbeads, 3, 3), float)
@@ -1253,12 +1298,8 @@ class Forces(dobject):
                 and self.mforces[index].mts_weights[level] != 0
                 and self.mforces[index].weight != 0
             ):
-                dv = np.zeros((self.beads.nbeads, 3, 3), float)
-                for i in range(3):
-                    for j in range(3):
-                        dv[:, i, j] += self.mrpc[index].b2tob1(
-                            self.mforces[index].virs[:, i, j]
-                        )
+                dmvirs = dstrip(self.mforces[index].virs)
+                dv = self.mrpc[index].b2tob1(dmvirs)
                 rp += (
                     self.mforces[index].weight
                     * self.mforces[index].mts_weights[level]
@@ -1267,7 +1308,7 @@ class Forces(dobject):
         return rp
 
     def get_nmtslevels(self):
-        """ Returns the total number of mts levels."""
+        """Returns the total number of mts levels."""
 
         nm = len(self.mforces[0].mts_weights)
         if all(len(x.mts_weights) == nm for x in self.mforces):
@@ -1318,21 +1359,60 @@ class Forces(dobject):
                 rp += (
                     self.mforces[k].weight
                     * self.mforces[k].mts_weights.sum()
-                    * self.mrpc[k].b2tob1(self.mforces[k].pots)
+                    * self.mrpc[k].b2tob1(dstrip(self.mforces[k].pots))
                 )
         return rp
 
     def extra_combine(self):
-        """Obtains the potential energy for each forcefield."""
+        """Combines the extra dictionaries for each forcefield for each bead."""
 
         self.queue()
-        rp = ["" for b in range(self.nbeads)]
+
+        re = {}
         for k in range(self.nforces):
-            # "expand" to the total number of beads the potentials from the
-            # contracted one
-            for b in range(self.nbeads):
-                rp[b] += self.mforces[k].extras[b]
-        return rp
+            # combines the extras from the different force components
+            for e, v in self.mforces[k].extras.items():
+                if e in self.mforces[k].force_extras:
+                    # extras that are tagged as force_extras are treated exactly as if they were an energy/force/stress
+                    v = (
+                        self.mforces[k].weight
+                        * self.mforces[k].mts_weights.sum()
+                        * self.mrpc[k].b2tob1(v)
+                    )
+                    if e in re:
+                        # if multiple forcefields have the same "promoted extras" these get summed
+                        re[e] += v
+                    else:
+                        # the first is just added to the dict, so we don't have to worry about extras having different shapes
+                        re[e] = v
+                else:
+                    # other extras are not touched, just accummulated. if there is a contraction, they are dropped because there is no meaningful way to do a contraction
+                    if self.nbeads != self.mforces[k].nbeads:
+                        warning(
+                            "Extra field '"
+                            + e
+                            + "' cannot be contracted unless interpreted as physical properties. Will just drop it",
+                            verbosity.high,
+                        )
+                    else:
+                        if e == "raw":
+                            # concatenates raw outputs
+                            if e in re:
+                                # concatenation must happen bead per bead
+                                for ib in range(self.nbeads):
+                                    re["raw"][ib] += v[ib]
+                            else:
+                                re["raw"] = v
+                        else:
+                            if e in re:
+                                warning(
+                                    "Extra field '"
+                                    + e
+                                    + "' appears in multiple forcefields will be overwritten unless interpreted as physical property",
+                                    verbosity.high,
+                                )
+                            re[e] = v
+        return re
 
     def vir_combine(self):
         """Obtains the virial tensor for each forcefield."""
@@ -1341,16 +1421,14 @@ class Forces(dobject):
         rp = np.zeros((self.nbeads, 3, 3), float)
         for k in range(self.nforces):
             if self.mforces[k].weight != 0:
-                virs = dstrip(self.mforces[k].virs)
+                dmvirs = dstrip(self.mforces[k].virs)
                 # "expand" to the total number of beads the virials from the
                 # contracted one, element by element
-                for i in range(3):
-                    for j in range(3):
-                        rp[:, i, j] += (
-                            self.mforces[k].weight
-                            * self.mforces[k].mts_weights.sum()
-                            * self.mrpc[k].b2tob1(virs[:, i, j])
-                        )
+                rp += (
+                    self.mforces[k].weight
+                    * self.mforces[k].mts_weights.sum()
+                    * self.mrpc[k].b2tob1(dmvirs)
+                )
         return rp
 
     def get_potssc(self):

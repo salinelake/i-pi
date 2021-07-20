@@ -68,7 +68,7 @@ class Dynamics(Motion):
         """
 
         super(Dynamics, self).__init__(fixcom=fixcom, fixatoms=fixatoms)
-        dself = dd(self)
+        dself = dd(self)  # noqa
 
         # initialize time step. this is the master time step that covers a full time step
         dd(self).dt = depend_value(name="dt", value=timestep)
@@ -142,7 +142,7 @@ class Dynamics(Motion):
         conserved quantity the dependencies are defined in bind.
 
         Args:
-            beads: The beads object from whcih the bead positions are taken.
+            beads: The beads object from which the bead positions are taken.
             nm: A normal modes object used to do the normal modes transformation.
             cell: The cell object from which the system box is taken.
             bforce: The forcefield object from which the force and virial are
@@ -163,7 +163,7 @@ class Dynamics(Motion):
         dself = dd(self)
         dthrm = dd(self.thermostat)
         dbaro = dd(self.barostat)
-        dnm = dd(self.nm)
+        dnm = dd(self.nm)  # noqa
         dens = dd(self.ensemble)
 
         # n times the temperature (for path integral partition function)
@@ -180,7 +180,7 @@ class Dynamics(Motion):
         # depending on the kind, the thermostat might work in the normal mode or the bead representation.
         self.thermostat.bind(beads=self.beads, nm=self.nm, prng=prng, fixdof=fixdof)
 
-        # first makes sure that the barostat has the correct stress andf timestep, then proceeds with binding it.
+        # first makes sure that the barostat has the correct stress and timestep, then proceeds with binding it.
         dpipe(dself.ntemp, dbaro.temp)
         dpipe(dens.pext, dbaro.pext)
         dpipe(dens.stressext, dbaro.stressext)
@@ -201,7 +201,7 @@ class Dynamics(Motion):
         self.ensemble.add_econs(dthrm.ethermo)
         self.ensemble.add_econs(dbaro.ebaro)
 
-        # adds the potential, kinetic enrgy and the cell jacobian to the ensemble
+        # adds the potential, kinetic energy and the cell Jacobian to the ensemble
         self.ensemble.add_xlpot(dbaro.pot)
         self.ensemble.add_xlpot(dbaro.cell_jacobian)
         self.ensemble.add_xlkin(dbaro.kin)
@@ -241,14 +241,14 @@ class Dynamics(Motion):
         return self.ensemble.temp * self.beads.nbeads
 
     def step(self, step=None):
-        """ Advances the dynamics by one time step """
+        """Advances the dynamics by one time step"""
 
         self.integrator.step(step)
         self.ensemble.time += self.dt  # increments internal time
 
 
 class DummyIntegrator(dobject):
-    """ No-op integrator for (PI)MD """
+    """No-op integrator for (PI)MD"""
 
     def __init__(self):
         pass
@@ -274,7 +274,7 @@ class DummyIntegrator(dobject):
             )
 
     def bind(self, motion):
-        """ Reference all the variables for simpler access."""
+        """Reference all the variables for simpler access."""
 
         self.beads = motion.beads
         self.bias = motion.ensemble.bias
@@ -393,7 +393,7 @@ class DummyIntegrator(dobject):
 
 class NVEIntegrator(DummyIntegrator):
 
-    """ Integrator object for constant energy simulations.
+    """Integrator object for constant energy simulations.
 
     Has the relevant conserved quantity and normal mode propagator for the
     constant energy ensemble. Note that a temperature of some kind must be
@@ -410,7 +410,7 @@ class NVEIntegrator(DummyIntegrator):
     """
 
     def pstep(self, level=0):
-        """Velocity Verlet monemtum propagator."""
+        """Velocity Verlet momentum propagator."""
 
         # halfdt/alpha
         self.beads.p += self.forces.forces_mts(level) * self.pdt[level]
@@ -428,7 +428,7 @@ class NVEIntegrator(DummyIntegrator):
     # take the BAB MTS, and insert the O in the very middle. This might imply breaking a A step in two, e.g. one could have
     # Bbabb(a/2) O (a/2)bbabB
     def mtsprop_ba(self, index):
-        """ Recursive MTS step """
+        """Recursive MTS step"""
 
         mk = int(self.nmts[index] / 2)
 
@@ -461,7 +461,7 @@ class NVEIntegrator(DummyIntegrator):
                 self.mtsprop_ba(index + 1)
 
     def mtsprop_ab(self, index):
-        """ Recursive MTS step """
+        """Recursive MTS step"""
 
         if self.nmts[index] % 2 == 1:
             if index == self.nmtslevels - 1:
@@ -603,9 +603,14 @@ class NPTIntegrator(NVTIntegrator):
     """
 
     # should be enough to redefine these functions, and the step() from NVTIntegrator should do the trick
+
     def pstep(self, level=0):
         """Velocity Verlet monemtum propagator."""
 
+        if np.array_equiv(self.forces.vir, np.zeros(len(self.forces.vir))):
+            raise ValueError(
+                "Seems like no stress tensor was computed by the client. Stopping barostat!"
+            )
         self.barostat.pstep(level)
         super(NPTIntegrator, self).pstep(level)
         # self.pconstraints()
@@ -739,6 +744,11 @@ class SCNPTIntegrator(SCIntegrator):
     # should be enough to redefine these functions, and the step() from NVTIntegrator should do the trick
     def pstep(self, level=0):
         """Velocity Verlet monemtum propagator."""
+
+        if np.array_equiv(self.forces.vir, np.zeros(len(self.forces.vir))):
+            raise ValueError(
+                "Seems like no stress tensor was computed by the client. Stopping barostat!"
+            )
 
         self.barostat.pstep(level)
         super(SCNPTIntegrator, self).pstep(level)

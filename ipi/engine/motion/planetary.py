@@ -143,7 +143,9 @@ class Planetary(Motion):
         )
         self.dens = ens.copy()
         self.dbias = ens.bias.copy(self.dbeads, self.dcell)
-        self.dens.bind(self.dbeads, self.dnm, self.dcell, self.dforces, self.dbias)
+        self.dens.bind(
+            self.dbeads, self.dnm, self.dcell, self.dforces, self.dbias, omaker
+        )
 
         self.natoms = self.dbeads.natoms
         natoms3 = self.dbeads.natoms * 3
@@ -180,9 +182,9 @@ class Planetary(Motion):
         self.omega2 -= qffq
 
     def matrix_screen(self):
-        """ Computes a screening matrix to avoid the impact of
+        """Computes a screening matrix to avoid the impact of
         noisy elements of the covariance and frequency matrices for
-        far-away atoms """
+        far-away atoms"""
 
         q = np.array(self.dbeads[0].q).reshape(self.natoms, 3)
         sij = q[:, np.newaxis, :] - q
@@ -205,7 +207,7 @@ class Planetary(Motion):
         return sij
 
     def save_matrix(self, matrix):
-        """ Writes the compressed, sparse frequency matrix to a netstring encoded file """
+        """Writes the compressed, sparse frequency matrix to a netstring encoded file"""
 
         sparse.save_npz(
             self.fomega2, matrix, saver=netstring_encoded_savez, compressed=True

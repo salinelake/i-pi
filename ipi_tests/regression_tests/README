@@ -1,4 +1,11 @@
-See documentaion of how to run the regression tests by running:
+----------------------------------------------------------------------------------
+                   R E G R E S S I O N   T E S T S
+----------------------------------------------------------------------------------
+
+INFORMATION ON CREATING NEW REGRESSION TESTS
+----------------------------------------------------------------------------------
+
+See the documentaion of how to run the regression tests by running:
 
    "python test_run.py -h"
 
@@ -6,9 +13,36 @@ To add a new regression test please provide:
 
    - input.xml (and all the files required by it)
 
-   - driver.txt specifing  "<driver> <address> <port> <unix/inet> " (see existing examples)
+   - test_settings.dat 
+     This file specifies the driver_model and flags that will be used when running
+     the driver to perform the regression test.
+     For examples including the usage of option flags, please see:
+         tests/NVE/NVE_1/harmonic_python/test_settings.dat
+         tests/NVE/NVE_1/harmonic/test_settings.dat
 
-   - a reference output with the name 'ref_simulation.out'
+     *Please note that the driver can be run with the same syntax when one
+     creates the reference files for the regression tests.
+
+     **Please note that in the case of different drivers one should start to
+     describe the setup of each driver by specifying driver_model xxxx in the 
+     first line
+   
+   - file_to_check.txt specifying the files serving as reference with their
+     respective filenames
+
+     for an existing example, please see:
+	tests/INSTANTON/100K/files_to_check.txt
+
+   - reference files that are listed in the files_to_check.txt file. Currently,
+     the available formats are .xyz and numpy-accessible which should be
+     specified with the keywords 'xyz' and 'numpy'.
+
+   - (For the moment) We assume a very specific syntax for the file names. 
+     The reference file name should be the same as the output file name with the addition of 'ref_' at the beginning, example:
+
+     reference file: ref_simulation.out
+     output to be genererated from i-pi: simulation.out
+
 
 Important: 
 
@@ -17,4 +51,5 @@ Important:
    You can do that by typing:
 
     "git add -f ref_simulation.out"
+
 
